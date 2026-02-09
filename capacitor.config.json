@@ -1,0 +1,11 @@
+{
+  "appId": "at.feldarmbrust.app",
+  "appName": "FeldarmbrustApp",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": ["192.168.178.110"]
+  }
+}
