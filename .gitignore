@@ -1,0 +1,28 @@
+# Node / Web
+node_modules/
+dist/
+build/
+www/
+.android/
+.ionic/
+
+# Capacitor / Android
+android/.gradle/
+android/build/
+android/app/build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
