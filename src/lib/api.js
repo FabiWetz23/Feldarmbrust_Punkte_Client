@@ -1,12 +1,18 @@
-export async function fetchJSON(url, opts = {}, timeoutMs = 6000) {
+export async function fetchJSON(url, opts = {}, apiKey = null, timeoutMs = 6000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
 
+  const headers = { ...opts.headers };
+  if (apiKey) {
+    headers["X-API-KEY"] = apiKey;
+  }
+
   try {
-    const r = await fetch(url, { ...opts, signal: controller.signal });
+    const r = await fetch(url, { ...opts, headers, signal: controller.signal });
     const text = await r.text();
     const data = text ? JSON.parse(text) : null;
     if (!r.ok) {
+      if (r.status === 401) throw new Error("Invalid API Key");
       const msg = (data && data.error) ? data.error : `HTTP ${r.status}`;
       throw new Error(msg);
     }
@@ -22,31 +28,31 @@ export function api(base, path) {
   return `${b}${p}`;
 }
 
-export function getState(base) {
-  return fetchJSON(api(base, "/state"));
+export function getState(base, apiKey) {
+  return fetchJSON(api(base, "/state"), {}, apiKey);
 }
 
-export function upsertShooter(base, shooter) {
+export function upsertShooter(base, shooter, apiKey) {
   return fetchJSON(api(base, "/shooters"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(shooter)
-  });
+  }, apiKey);
 }
 
-export function upsertSeries(base, series) {
+export function upsertSeries(base, series, apiKey) {
   return fetchJSON(api(base, "/series"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(series)
-  });
+  }, apiKey);
 }
 
-export function setShot(base, seriesId, shot) {
+export function setShot(base, seriesId, shot, apiKey) {
   return fetchJSON(api(base, `/series/${encodeURIComponent(seriesId)}/shot`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(shot) // shot = { shot_number, score }
-  });
+    body: JSON.stringify(shot)
+  }, apiKey);
 }
 

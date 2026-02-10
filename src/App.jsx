@@ -21,7 +21,34 @@ const MAX_POINTS = 10;           // Max regular points (11 is inner ten)
 export default function App() {
   const [tab, setTab] = useState("setup");
   const [settings, setSettings] = useState(loadSettings());
-  const [apiBase, setApiBase] = useState(settings.apiBase || "");
+  const [apiBase, setApiBase] = useState(() => {
+    const saved = localStorage.getItem("apiBase") || "http://192.168.0.25:8000";
+    return saved;
+  });
+
+  const [apiKey, setApiKey] = useState(() => {
+    return localStorage.getItem("apiKey") || "1234";
+  });
+
+  const updateApiBase = (val) => {
+    let url = val.trim();
+    if (url && !url.startsWith("http")) {
+      url = "http://" + url;
+    }
+    // Force http for Option B stability
+    if (url.startsWith("https://")) {
+      url = url.replace("https://", "http://");
+    }
+    setApiBase(url);
+    localStorage.setItem("apiBase", url);
+  };
+
+  const updateApiKey = (val) => {
+    const trimmed = val.trim();
+    setApiKey(trimmed);
+    localStorage.setItem("apiKey", trimmed);
+  };
+
   const [state, setState] = useState(null);
 
   const [online, setOnline] = useState(false);
@@ -77,14 +104,14 @@ export default function App() {
   async function connect() {
     const base = apiBase.trim();
     if (!base) {
-      setStatusMsg("Please enter Server URL (e.g. http://192.168.0.10:8000).");
+      setStatusMsg("Please enter Server URL.");
       setOnline(false);
       return;
     }
 
     setStatusMsg("Connecting…");
     try {
-      const st = await API.getState(base);
+      const st = await API.getState(base, apiKey);
       setState(st);
       setOnline(true);
       setStatusMsg("Connected.");
@@ -106,7 +133,7 @@ export default function App() {
   async function refreshState() {
     if (!apiBase.trim()) return;
     try {
-      const st = await API.getState(apiBase.trim());
+      const st = await API.getState(apiBase.trim(), apiKey);
       setState(st);
       setOnline(true);
       setStatusMsg("Connected.");
@@ -121,11 +148,11 @@ export default function App() {
 
     const res = await flushQueue(async (action) => {
       if (action.type === "upsertShooter") {
-        await API.upsertShooter(apiBase.trim(), action.payload);
+        await API.upsertShooter(apiBase.trim(), action.payload, apiKey);
       } else if (action.type === "upsertSeries") {
-        await API.upsertSeries(apiBase.trim(), action.payload);
+        await API.upsertSeries(apiBase.trim(), action.payload, apiKey);
       } else if (action.type === "setShot") {
-        await API.setShot(apiBase.trim(), action.payload.seriesId, action.payload.shot);
+        await API.setShot(apiBase.trim(), action.payload.seriesId, action.payload.shot, apiKey);
       } else {
         throw new Error("unknown_action");
       }
@@ -151,7 +178,7 @@ export default function App() {
     }, 3500);
     return () => clearInterval(syncTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBase]);
+  }, [apiBase, apiKey]);
 
   useEffect(() => {
     if (!activeShooterId && shooters.length) {
@@ -180,7 +207,7 @@ export default function App() {
     };
 
     try {
-      await API.upsertShooter(apiBase.trim(), shooter);
+      await API.upsertShooter(apiBase.trim(), shooter, apiKey);
       await refreshState();
       setActiveShooterId(shooter.id);
       setNewName(""); setNewCountry(""); setNewStartNr("");
@@ -206,7 +233,7 @@ export default function App() {
     };
 
     try {
-      await API.upsertSeries(apiBase.trim(), series);
+      await API.upsertSeries(apiBase.trim(), series, apiKey);
       await refreshState();
       return id;
     } catch (e) {
@@ -237,8 +264,14 @@ export default function App() {
     }
 
     const shot = { shot_number: index, score: v };
-    await API.setShot(apiBase.trim(), seriesId, shot);
-    await refreshState();
+    try {
+      await API.setShot(apiBase.trim(), seriesId, shot, apiKey);
+      await refreshState();
+    } catch (e) {
+      enqueue({ type: "setShot", payload: { seriesId, shot } });
+      setQueueCount(peekAll().length);
+      setStatusMsg(`Shot queued: ${e.message}`);
+    }
   }
 
   const connectionBanner = useMemo(() => {
@@ -295,9 +328,18 @@ export default function App() {
                 className="input"
                 placeholder="http://192.168.0.10:8000"
                 value={apiBase}
-                onChange={(e) => setApiBase(e.target.value)}
+                onChange={(e) => updateApiBase(e.target.value)}
               />
-              <div style={{ height: 10 }} />
+              <div style={{ height: 12 }} />
+              <div className="small" style={{ marginBottom: 6 }}>API Key (Password)</div>
+              <input
+                className="input"
+                type="password"
+                placeholder="Password"
+                value={apiKey}
+                onChange={(e) => updateApiKey(e.target.value)}
+              />
+              <div style={{ height: 16 }} />
               <div className="row">
                 <button className="btn primary" onClick={connect}>Connect</button>
                 <button className="btn" onClick={async () => { await flush(); }}>Force Sync</button>
@@ -312,7 +354,7 @@ export default function App() {
                   Clear Queue
                 </button>
 
-                <a className="btn" href={apiBase.trim() ? `${apiBase.trim().replace(/\/+$/, "")}/export` : "#"} target="_blank" rel="noreferrer">
+                <a className="btn" href={apiBase.trim() ? `${apiBase.trim().replace(/\/+$/, "")}/export?key=${apiKey}` : "#"} target="_blank" rel="noreferrer">
                   Excel Export
                 </a>
               </div>
