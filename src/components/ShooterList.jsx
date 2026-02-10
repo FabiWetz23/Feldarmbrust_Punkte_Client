@@ -7,7 +7,7 @@ export default function ShooterList({ shooters, activeId, onSelect }) {
     const t = (q || "").trim().toLowerCase();
     if (!t) return shooters;
     return shooters.filter(s =>
-      `${s.name} ${s.club || ""}`.toLowerCase().includes(t)
+      `${s.name} ${s.country || ""} ${s.start_number || ""}`.toLowerCase().includes(t)
     );
   }, [q, shooters]);
 
@@ -15,7 +15,7 @@ export default function ShooterList({ shooters, activeId, onSelect }) {
     <div>
       <input
         className="input"
-        placeholder="Suche (Name/Verein)…"
+        placeholder="Search (Name/Country/Nr)…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
@@ -27,20 +27,23 @@ export default function ShooterList({ shooters, activeId, onSelect }) {
           <div key={s.id} className="item">
             <div className="row">
               <div style={{ minWidth: 220 }}>
-                <div className="itemTitle">{s.name}</div>
-                <div className="small">{s.club || "—"}</div>
+                <div className="itemTitle">
+                  <span style={{ marginRight: 8, opacity: 0.7 }}>No. {s.start_number || "?"}</span>
+                  {s.name}
+                </div>
+                <div className="small">{s.country || "—"}</div>
               </div>
               <div className="spacer" />
               {activeId === s.id ? (
-                <span className="pill">✅ aktiv</span>
+                <span className="pill">✅ Active</span>
               ) : (
-               <button
-                 className="btn primary"
-                 onClick={() => onSelect(s.id)}
-                 onTouchEnd={(e) => { e.preventDefault(); onSelect(s.id); }}
-               >
-                 Aktiv wählen
-               </button>
+                <button
+                  className="btn primary"
+                  onClick={() => onSelect(s.id)}
+                  onTouchEnd={(e) => { e.preventDefault(); onSelect(s.id); }}
+                >
+                  Select
+                </button>
 
               )}
             </div>
@@ -49,7 +52,7 @@ export default function ShooterList({ shooters, activeId, onSelect }) {
 
         {!filtered.length && (
           <div className="item">
-            <div className="small">Keine Treffer.</div>
+            <div className="small">No results.</div>
           </div>
         )}
       </div>

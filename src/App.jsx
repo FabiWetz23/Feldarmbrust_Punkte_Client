@@ -10,13 +10,13 @@ import { loadSettings, saveSettings } from "./lib/storage.js";
 import { uid } from "./lib/uuid.js";
 import * as API from "./lib/api.js";
 import { enqueue, flushQueue, peekAll } from "./lib/offlineQueue.js";
-import { clampInt, getSeries, makeSeriesId, seriesTotal, shooterGrandTotal, normalizeShots } from "./lib/math.js";
+import { clampInt, getSeries, makeSeriesId, seriesTotal, shooterGrandTotal, normalizeShots, countInnerTens } from "./lib/math.js";
 
 
-const SHOTS_PER_SERIES = 6;      // <- anpassen
-const MAX_ROUNDS = 10;           // <- anpassen
-const MIN_POINTS = 0;            // <- anpassen
-const MAX_POINTS = 10;           // <- anpassen
+const SHOTS_PER_SERIES = 3;      // 3 shots per series
+const MAX_ROUNDS = 10;           // 10 match rounds
+const MIN_POINTS = 0;
+const MAX_POINTS = 10;           // Max regular points (11 is inner ten)
 
 export default function App() {
   const [tab, setTab] = useState("setup");
@@ -25,15 +25,17 @@ export default function App() {
   const [state, setState] = useState(null);
 
   const [online, setOnline] = useState(false);
-  const [statusMsg, setStatusMsg] = useState("Noch nicht verbunden.");
+  const [statusMsg, setStatusMsg] = useState("Not connected yet.");
   const [queueCount, setQueueCount] = useState(peekAll().length);
 
   const [activeShooterId, setActiveShooterId] = useState(null);
+  // Default to Round 1 (Competition). Sighting are -1, 0.
   const [round, setRound] = useState(1);
 
   // add shooter form
   const [newName, setNewName] = useState("");
-  const [newClub, setNewClub] = useState("");
+  const [newCountry, setNewCountry] = useState("");
+  const [newStartNr, setNewStartNr] = useState("");
 
   const syncTimer = useRef(null);
 
@@ -67,20 +69,25 @@ export default function App() {
     [state, activeShooterId]
   );
 
+  const innerTensCount = useMemo(
+    () => activeShooterId ? countInnerTens(state, activeShooterId) : 0,
+    [state, activeShooterId]
+  );
+
   async function connect() {
     const base = apiBase.trim();
     if (!base) {
-      setStatusMsg("Bitte Server-URL eingeben (z. B. http://192.168.0.10:8000).");
+      setStatusMsg("Please enter Server URL (e.g. http://192.168.0.10:8000).");
       setOnline(false);
       return;
     }
 
-    setStatusMsg("Verbinde…");
+    setStatusMsg("Connecting…");
     try {
       const st = await API.getState(base);
       setState(st);
       setOnline(true);
-      setStatusMsg("Verbunden.");
+      setStatusMsg("Connected.");
       // set default active shooter
       const dict = st?.competition?.shooters;
       const list = dict ? Object.values(dict) : [];
@@ -92,7 +99,7 @@ export default function App() {
       });
     } catch (e) {
       setOnline(false);
-      setStatusMsg(`Offline / keine Verbindung: ${e.message}`);
+      setStatusMsg(`Offline / No Connection: ${e.message}`);
     }
   }
 
@@ -102,7 +109,7 @@ export default function App() {
       const st = await API.getState(apiBase.trim());
       setState(st);
       setOnline(true);
-      setStatusMsg("Verbunden.");
+      setStatusMsg("Connected.");
     } catch (e) {
       setOnline(false);
       setStatusMsg(`Offline: ${e.message}`);
@@ -147,10 +154,10 @@ export default function App() {
   }, [apiBase]);
 
   useEffect(() => {
-        if (!activeShooterId && shooters.length) {
-          setActiveShooterId(shooters[0].id);
-        }
-      }, [shooters, activeShooterId]);
+    if (!activeShooterId && shooters.length) {
+      setActiveShooterId(shooters[0].id);
+    }
+  }, [shooters, activeShooterId]);
 
   // initial connect attempt if saved
   useEffect(() => {
@@ -160,27 +167,30 @@ export default function App() {
 
   async function createShooter() {
     const name = newName.trim();
-    const club = newClub.trim();
+    const country = newCountry.trim();
+    const startNr = newStartNr.trim();
+
     if (!name) return;
 
-    const shooter = club ? { id: uid("sh"), name, club } : { id: uid("sh"), name };
-
-
-
-
+    const shooter = {
+      id: uid("sh"),
+      name,
+      country: country || null,
+      start_number: startNr || null
+    };
 
     try {
       await API.upsertShooter(apiBase.trim(), shooter);
       await refreshState();
       setActiveShooterId(shooter.id);
-      setNewName(""); setNewClub("");
+      setNewName(""); setNewCountry(""); setNewStartNr("");
       setTab("shoot");
     } catch (e) {
       // offline → enqueue
       enqueue({ type: "upsertShooter", payload: shooter });
       setQueueCount(peekAll().length);
-      setStatusMsg("Offline – Schütze gepuffert, wird synchronisiert.");
-      setNewName(""); setNewClub("");
+      setStatusMsg("Offline – Shooter queued.");
+      setNewName(""); setNewCountry(""); setNewStartNr("");
     }
   }
 
@@ -202,7 +212,7 @@ export default function App() {
     } catch (e) {
       enqueue({ type: "upsertSeries", payload: series });
       setQueueCount(peekAll().length);
-      setStatusMsg("Offline – Serie gepuffert.");
+      setStatusMsg("Offline – Series queued.");
       return id;
     }
   }
@@ -222,29 +232,30 @@ export default function App() {
 
     const v = clampInt(valueOrNull, MIN_POINTS, MAX_POINTS);
     if (v === null) {
-      setStatusMsg(`Ungültig: ${MIN_POINTS}–${MAX_POINTS}`);
+      setStatusMsg(`Invalid: ${MIN_POINTS}–${MAX_POINTS}`);
       return;
     }
 
     const shot = { shot_number: index, score: v };
     await API.setShot(apiBase.trim(), seriesId, shot);
+    await refreshState();
   }
 
   const connectionBanner = useMemo(() => {
     if (!apiBase.trim()) {
-      return <Banner kind="warn" title="Server nicht gesetzt">Gib die Server-URL ein (Laptop-IP + Port).</Banner>;
+      return <Banner kind="warn" title="Server not set">Enter Server URL (Laptop IP + Port).</Banner>;
     }
     if (online) {
       return (
         <Banner kind="ok" title="Online">
-          Verbunden mit <span style={{ fontWeight: 900 }}>{apiBase.trim()}</span>.
-          {queueCount ? ` (${queueCount} Aktionen warten)` : ""}
+          Connected to <span style={{ fontWeight: 900 }}>{apiBase.trim()}</span>.
+          {queueCount ? ` (${queueCount} actions pending)` : ""}
         </Banner>
       );
     }
     return (
-      <Banner kind="bad" title="Offline / nicht erreichbar">
-        {statusMsg} {queueCount ? `(${queueCount} Aktionen in Warteschlange)` : ""}
+      <Banner kind="bad" title="Offline / Unreachable">
+        {statusMsg} {queueCount ? `(${queueCount} in queue)` : ""}
       </Banner>
     );
   }, [apiBase, online, statusMsg, queueCount]);
@@ -253,13 +264,13 @@ export default function App() {
     <div className="container">
       <div className="header">
         <div>
-          <div className="h1">Punkteerfassung (Tablet)</div>
-          <div className="small">Touch-optimiert • Offline-Queue • WLAN zum Laptop</div>
+          <div className="h1">Feldarmbrust Score</div>
+          <div className="small">Touch-optimized • Offline-Queue</div>
         </div>
 
         <div className="row">
           <span className="pill">Queue: <b style={{ color: "var(--text)" }}>{queueCount}</b></span>
-          <button className="btn" onClick={() => refreshState()}>Aktualisieren</button>
+          <button className="btn" onClick={() => refreshState()}>Refresh</button>
         </div>
       </div>
 
@@ -271,15 +282,15 @@ export default function App() {
           onChange={setTab}
           items={[
             { value: "setup", label: "Setup" },
-            { value: "shooters", label: "Schützen" },
-            { value: "shoot", label: "Eingabe" }
+            { value: "shooters", label: "Shooters" },
+            { value: "shoot", label: "Input" }
           ]}
         />
 
         {tab === "setup" && (
           <div className="grid2">
             <div>
-              <div className="small" style={{ marginBottom: 6 }}>Server-URL (Laptop)</div>
+              <div className="small" style={{ marginBottom: 6 }}>Server URL (Laptop)</div>
               <input
                 className="input"
                 placeholder="http://192.168.0.10:8000"
@@ -288,35 +299,35 @@ export default function App() {
               />
               <div style={{ height: 10 }} />
               <div className="row">
-                <button className="btn primary" onClick={connect}>Verbinden</button>
-                <button className="btn" onClick={async () => { await flush(); }}>Sync erzwingen</button>
+                <button className="btn primary" onClick={connect}>Connect</button>
+                <button className="btn" onClick={async () => { await flush(); }}>Force Sync</button>
                 <button
                   className="btn danger"
                   onClick={() => {
                     clearAll();
                     setQueueCount(0);
-                    setStatusMsg("Queue gelöscht.");
+                    setStatusMsg("Queue cleared.");
                   }}
                 >
-                  Queue löschen
+                  Clear Queue
                 </button>
 
-                <a className="btn" href={apiBase.trim() ? `${apiBase.trim().replace(/\/+$/,"")}/export` : "#"} target="_blank" rel="noreferrer">
+                <a className="btn" href={apiBase.trim() ? `${apiBase.trim().replace(/\/+$/, "")}/export` : "#"} target="_blank" rel="noreferrer">
                   Excel Export
                 </a>
               </div>
 
               <div className="small" style={{ marginTop: 10 }}>
-                Tipp: Laptop und Tablet im gleichen WLAN. Laptop-IP z.B. über <b>ipconfig</b>.
+                Tip: Laptop and Tablet must be in the same WiFi. Find Laptop IP via <b>ipconfig</b>.
               </div>
             </div>
 
             <div>
               <div className="small" style={{ marginBottom: 6 }}>Status</div>
               <div className="item">
-                <div><b>Online:</b> {online ? "ja" : "nein"}</div>
-                <div><b>Meldung:</b> {statusMsg}</div>
-                <div><b>Schützen:</b> {shooters.length}</div>
+                <div><b>Online:</b> {online ? "Yes" : "No"}</div>
+                <div><b>Message:</b> {statusMsg}</div>
+                <div><b>Shooters:</b> {shooters.length}</div>
                 <div><b>Event:</b> {state?.eventId || "—"}</div>
               </div>
             </div>
@@ -326,32 +337,43 @@ export default function App() {
         {tab === "shooters" && (
           <div className="grid2">
             <div>
-              <div className="small" style={{ marginBottom: 6 }}>Neuen Schützen anlegen</div>
-              <input
-                className="input"
-                placeholder="Name"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-              />
+              <div className="small" style={{ marginBottom: 6 }}>Add New Shooter</div>
+              <div className="row">
+                <input
+                  className="input"
+                  placeholder="No"
+                  value={newStartNr}
+                  onChange={(e) => setNewStartNr(e.target.value)}
+                  style={{ width: "80px", marginRight: "8px" }}
+                />
+                <input
+                  className="input"
+                  placeholder="Name"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+              </div>
+
               <div style={{ height: 8 }} />
               <input
                 className="input"
-                placeholder="Verein (optional)"
-                value={newClub}
-                onChange={(e) => setNewClub(e.target.value)}
+                placeholder="Country (optional)"
+                value={newCountry}
+                onChange={(e) => setNewCountry(e.target.value)}
               />
               <div style={{ height: 10 }} />
-              <button className="btn primary" onClick={createShooter}>Hinzufügen</button>
+              <button className="btn primary" onClick={createShooter}>Add Shooter</button>
 
               <div className="small" style={{ marginTop: 10 }}>
-                Offline? Kein Problem: wird gepuffert und später synchronisiert.
+                Offline? No problem: will be queued and synced later.
               </div>
             </div>
 
             <div>
               <div className="row" style={{ marginBottom: 10 }}>
-                <span className="pill">Aktiv</span>
-                <b>{activeShooter ? `${activeShooter.name} (${activeShooter.club || "—"})` : "—"}</b>
+                <span className="pill">Active</span>
+                <b>{activeShooter ? `${activeShooter.name} (${activeShooter.country || "—"})` : "—"}</b>
               </div>
               <ShooterList
                 shooters={shooters}
@@ -365,22 +387,23 @@ export default function App() {
         {tab === "shoot" && (
           <div>
             <div className="row" style={{ marginBottom: 10 }}>
-              <span className="pill">Aktiver Schütze</span>
-              <b>{activeShooter ? `${activeShooter.name} (${activeShooter.club || "—"})` : "— bitte wählen —"}</b>
+              <span className="pill">Shooter</span>
+              <b>{activeShooter ? `${activeShooter.name} (${activeShooter.country || "—"})` : "— select —"}</b>
               <div className="spacer" />
-              <button className="btn" onClick={() => setTab("shooters")}>Schütze wechseln</button>
+              <button className="btn" onClick={() => setTab("shooters")}>Change</button>
             </div>
 
             <div className="row" style={{ marginBottom: 10 }}>
               <RoundPicker round={round} onRound={setRound} maxRounds={MAX_ROUNDS} />
               <div className="spacer" />
-              <span className="pill">Serie: <b style={{ color: "var(--text)" }}>{seriesScore}</b></span>
-              <span className="pill">Gesamt: <b style={{ color: "var(--text)" }}>{grandScore}</b></span>
+              <span className="pill">Series: <b style={{ color: "var(--text)" }}>{seriesScore}</b></span>
+              <span className="pill">Inner Tens: <b style={{ color: "var(--text)" }}>{innerTensCount}</b></span>
+              <span className="pill">Total: <b style={{ color: "var(--text)" }}>{grandScore}</b></span>
             </div>
 
             {!activeShooter && (
-              <Banner kind="warn" title="Kein Schütze aktiv">
-                Wechsle zu „Schützen“ und wähle einen aktiven Schützen.
+              <Banner kind="warn" title="No Shooter Active">
+                Go to "Shooters" and select an active shooter.
               </Banner>
             )}
 
@@ -395,12 +418,12 @@ export default function App() {
                   return (
                     <div key={idx} className="shotBox">
                       <div className="row" style={{ marginBottom: 6 }}>
-                        <div className="shotIndex">Schuss {idx}</div>
+                        <div className="shotIndex">Shot {idx}</div>
                         <div className="spacer" />
                         {Number.isInteger(currentValue) ? (
-                          <span className="pill">aktuell: <b style={{ color: "var(--text)" }}>{currentValue}</b></span>
+                          <span className="pill">Score: <b style={{ color: "var(--text)" }}>{currentValue === 11 ? "⑩" : currentValue}</b></span>
                         ) : (
-                          <span className="pill">leer</span>
+                          <span className="pill">empty</span>
                         )}
                       </div>
 
@@ -419,8 +442,7 @@ export default function App() {
 
             <div style={{ height: 12 }} />
             <div className="small">
-              Hinweis: ⌫ setzt in dieser Version auf <b>0</b> (weil Server kein Delete-Endpunkt hat).
-              Wenn du echtes Löschen willst, sag kurz Bescheid – ich gebe dir das passende Server-Endpoint + Client-Anpassung.
+              Note: ⌫ sets value to <b>0</b> (Server has no delete endpoint).
             </div>
           </div>
         )}
@@ -432,11 +454,11 @@ export default function App() {
           <div className="pill">Debug JSON</div>
           <div className="spacer" />
           <button className="btn" onClick={() => navigator.clipboard?.writeText(JSON.stringify(state || {}, null, 2))}>
-            Kopieren
+            Copy
           </button>
         </div>
         <pre style={{ margin: 0, marginTop: 10, whiteSpace: "pre-wrap" }}>
-{state ? JSON.stringify(state, null, 2) : "—"}
+          {state ? JSON.stringify(state, null, 2) : "—"}
         </pre>
       </div>
     </div>

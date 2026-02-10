@@ -1,7 +1,9 @@
+// 11 is used for "Inner Ten" (scored as 10)
 export function clampInt(v, min, max) {
   const n = Number(v);
   if (!Number.isInteger(n)) return null;
-  if (n < min || n > max) return null;
+  // allow 11 for inner ten even if max is 10
+  if ((n < min || n > max) && n !== 11) return null;
   return n;
 }
 
@@ -66,13 +68,40 @@ export function seriesTotal(series, shotsPerSeries = 6) {
   for (const sh of normalizeShots(series)) {
     if (sh.index >= 1 && sh.index <= shotsPerSeries) vals[sh.index - 1] = sh.value;
   }
-  return vals.reduce((acc, x) => acc + (Number.isInteger(x) ? x : 0), 0);
+  return vals.reduce((acc, x) => {
+    if (!Number.isInteger(x)) return acc;
+    // 11 counts as 10
+    return acc + (x === 11 ? 10 : x);
+  }, 0);
 }
 
 export function shooterGrandTotal(state, shooterId, shotsPerSeries = 6) {
   const all = getAllSeries(state);
-  const mine = all.filter(s => (s.shooter_id ?? s.shooterId) === shooterId);
+  // Match rounds are > 0. Sighting rounds are <= 0.
+  const mine = all.filter(s => {
+    const sid = s.shooter_id ?? s.shooterId;
+    const rn = Number(s.round_number ?? s.round);
+    return sid === shooterId && rn > 0;
+  });
   return mine.reduce((acc, s) => acc + seriesTotal(s, shotsPerSeries), 0);
+}
+
+export function countInnerTens(state, shooterId) {
+  const all = getAllSeries(state);
+  // Inner tens from MATCH rounds only? Usually yes.
+  const mine = all.filter(s => {
+    const sid = s.shooter_id ?? s.shooterId;
+    const rn = Number(s.round_number ?? s.round);
+    return sid === shooterId && rn > 0;
+  });
+
+  let count = 0;
+  for (const s of mine) {
+    for (const sh of normalizeShots(s)) {
+      if (sh.value === 11) count++;
+    }
+  }
+  return count;
 }
 
 export function makeSeriesId(shooterId, round) {
