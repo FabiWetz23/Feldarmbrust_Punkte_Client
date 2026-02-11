@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Tabs from "./components/Tabs.jsx";
 import Banner from "./components/Banner.jsx";
-import ShooterList from "./components/ShooterList.jsx";
+import CompetitorList from "./components/CompetitorList.jsx";
 import RoundPicker from "./components/RoundPicker.jsx";
 import ShotPad from "./components/ShotPad.jsx";
 import { clearAll } from "./lib/offlineQueue.js";
@@ -10,7 +10,7 @@ import { loadSettings, saveSettings } from "./lib/storage.js";
 import { uid } from "./lib/uuid.js";
 import * as API from "./lib/api.js";
 import { enqueue, flushQueue, peekAll } from "./lib/offlineQueue.js";
-import { clampInt, getSeries, makeSeriesId, seriesTotal, shooterGrandTotal, normalizeShots, countInnerTens } from "./lib/math.js";
+import { clampInt, getSeries, makeSeriesId, seriesTotal, competitorGrandTotal, normalizeShots, countInnerTens } from "./lib/math.js";
 
 
 const SHOTS_PER_SERIES = 3;      // 3 shots per series
@@ -55,36 +55,87 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState("Not connected yet.");
   const [queueCount, setQueueCount] = useState(peekAll().length);
 
-  const [activeShooterId, setActiveShooterId] = useState(null);
+  const [activeCompetitorId, setActiveCompetitorId] = useState(null);
   // Default to Round 1 (Competition). Sighting are -1, 0.
   const [round, setRound] = useState(1);
 
-  // add shooter form
+  // add competitor form
   const [newName, setNewName] = useState("");
   const [newCountry, setNewCountry] = useState("");
   const [newStartNr, setNewStartNr] = useState("");
 
   const syncTimer = useRef(null);
 
-  const shooters = useMemo(() => {
-    const dict = state?.competition?.shooters;
+  // --- OPTIMISTIC UI: mergedState ---
+  const mergedState = useMemo(() => {
+    const q = peekAll();
+    if (!state && !q.length) return null;
+
+    // Deep clone state to avoid mutations, or start with default structure
+    const next = state
+      ? JSON.parse(JSON.stringify(state))
+      : { competition: { shooters: {}, series: {} } };
+
+    if (!next.competition) next.competition = { shooters: {}, series: {} };
+    if (!next.competition.shooters) next.competition.shooters = {};
+    if (!next.competition.series) next.competition.series = {};
+
+    if (!q.length) return next;
+
+    for (const action of q) {
+      if (action.type === "upsertCompetitor") {
+        const c = action.payload;
+        next.competition.shooters[c.id] = c;
+      } else if (action.type === "upsertSeries") {
+        const s = action.payload;
+        // Don't overwrite if it already exists (it might have optimistic shots)
+        if (!next.competition.series[s.id]) {
+          next.competition.series[s.id] = { ...s, shot_scores: {} };
+        }
+      } else if (action.type === "setShot") {
+        const { seriesId, shot } = action.payload;
+        const ser = next.competition.series[seriesId];
+        if (ser) {
+          // If the server state has 'shots' as an array, we ensure we don't ignore it
+          // normalizeShots prefers 'shots' array over 'shot_scores' dict.
+          // To be safe, if 'shots' exists, we update it OR we force usage of shot_scores by deleting 'shots'
+          if (Array.isArray(ser.shots)) {
+            if (!ser.shot_scores) ser.shot_scores = {};
+            ser.shots.forEach(s => {
+              const idx = s.shot_number ?? s.index;
+              const val = s.score ?? s.value;
+              if (idx) ser.shot_scores[String(idx)] = val;
+            });
+            delete ser.shots;
+          }
+
+          if (!ser.shot_scores) ser.shot_scores = {};
+          ser.shot_scores[String(shot.shot_number)] = shot.score;
+        }
+      }
+    }
+    return next;
+  }, [state, queueCount]);
+
+  const competitors = useMemo(() => {
+    const dict = mergedState?.competition?.shooters;
     if (dict && typeof dict === "object") return Object.values(dict);
     // Fallback: aus leaderboard ziehen
-    const lb = state?.leaderboard;
+    const lb = mergedState?.leaderboard;
     if (Array.isArray(lb)) return lb.map(x => x.shooter).filter(Boolean);
     return [];
-  }, [state]);
+  }, [mergedState]);
 
 
-  const activeShooter = useMemo(
-    () => shooters.find(s => s.id === activeShooterId) || null,
-    [shooters, activeShooterId]
+  const activeCompetitor = useMemo(
+    () => competitors.find(s => s.id === activeCompetitorId) || null,
+    [competitors, activeCompetitorId]
   );
 
   const activeSeries = useMemo(() => {
-    if (!activeShooterId) return null;
-    return getSeries(state, activeShooterId, round);
-  }, [state, activeShooterId, round]);
+    if (!activeCompetitorId) return null;
+    return getSeries(mergedState, activeCompetitorId, round);
+  }, [mergedState, activeCompetitorId, round]);
 
   const seriesScore = useMemo(
     () => activeSeries ? seriesTotal(activeSeries, SHOTS_PER_SERIES) : 0,
@@ -92,13 +143,13 @@ export default function App() {
   );
 
   const grandScore = useMemo(
-    () => activeShooterId ? shooterGrandTotal(state, activeShooterId, SHOTS_PER_SERIES) : 0,
-    [state, activeShooterId]
+    () => activeCompetitorId ? competitorGrandTotal(mergedState, activeCompetitorId, SHOTS_PER_SERIES) : 0,
+    [mergedState, activeCompetitorId]
   );
 
-  const innerTensCount = useMemo(
-    () => activeShooterId ? countInnerTens(state, activeShooterId) : 0,
-    [state, activeShooterId]
+  const innerTensCountDeriv = useMemo(
+    () => activeCompetitorId ? countInnerTens(mergedState, activeCompetitorId) : 0,
+    [mergedState, activeCompetitorId]
   );
 
   async function connect() {
@@ -115,10 +166,10 @@ export default function App() {
       setState(st);
       setOnline(true);
       setStatusMsg("Connected.");
-      // set default active shooter
+      // set default active competitor
       const dict = st?.competition?.shooters;
       const list = dict ? Object.values(dict) : [];
-      if (!activeShooterId && list.length) setActiveShooterId(list[0].id);
+      if (!activeCompetitorId && list.length) setActiveCompetitorId(list[0].id);
       setSettings(s => {
         const next = { ...s, apiBase: base };
         saveSettings(next);
@@ -147,8 +198,8 @@ export default function App() {
     if (!apiBase.trim()) return { ok: false, flushed: 0, error: "no_server" };
 
     const res = await flushQueue(async (action) => {
-      if (action.type === "upsertShooter") {
-        await API.upsertShooter(apiBase.trim(), action.payload, apiKey);
+      if (action.type === "upsertCompetitor") {
+        await API.upsertCompetitor(apiBase.trim(), action.payload, apiKey);
       } else if (action.type === "upsertSeries") {
         await API.upsertSeries(apiBase.trim(), action.payload, apiKey);
       } else if (action.type === "setShot") {
@@ -181,10 +232,10 @@ export default function App() {
   }, [apiBase, apiKey]);
 
   useEffect(() => {
-    if (!activeShooterId && shooters.length) {
-      setActiveShooterId(shooters[0].id);
+    if (!activeCompetitorId && competitors.length) {
+      setActiveCompetitorId(competitors[0].id);
     }
-  }, [shooters, activeShooterId]);
+  }, [competitors, activeCompetitorId]);
 
   // initial connect attempt if saved
   useEffect(() => {
@@ -192,14 +243,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function createShooter() {
+  async function createCompetitor() {
     const name = newName.trim();
     const country = newCountry.trim();
     const startNr = newStartNr.trim();
 
     if (!name) return;
 
-    const shooter = {
+    const competitor = {
       id: uid("sh"),
       name,
       country: country || null,
@@ -207,27 +258,41 @@ export default function App() {
     };
 
     try {
-      await API.upsertShooter(apiBase.trim(), shooter, apiKey);
+      await API.upsertCompetitor(apiBase.trim(), competitor, apiKey);
       await refreshState();
-      setActiveShooterId(shooter.id);
+      setActiveCompetitorId(competitor.id);
       setNewName(""); setNewCountry(""); setNewStartNr("");
       setTab("shoot");
     } catch (e) {
       // offline → enqueue
-      enqueue({ type: "upsertShooter", payload: shooter });
+      enqueue({ type: "upsertCompetitor", payload: competitor });
       setQueueCount(peekAll().length);
-      setStatusMsg("Offline – Shooter queued.");
+      setStatusMsg("Offline – Competitor queued.");
+
+      // Optimistic update for UI state
+      setActiveCompetitorId(competitor.id);
       setNewName(""); setNewCountry(""); setNewStartNr("");
+      setTab("shoot");
     }
   }
 
-  async function ensureSeriesExists(shooterId, r) {
-    const id = makeSeriesId(shooterId, r);
+  async function ensureSeriesExists(competitorId, r) {
+    const id = makeSeriesId(competitorId, r);
+
+    // 1. Check if it already exists in the server state
+    if (getSeries(state, competitorId, r)) return id;
+
+    // 2. Check if it's already in the merged state (optimistic)
+    if (getSeries(mergedState, competitorId, r)) return id;
+
+    // 3. Fallback check: is it already in the offline queue as an action?
+    const queued = peekAll().find(a => a.type === "upsertSeries" && a.payload.id === id);
+    if (queued) return id;
 
     // Server erwartet: round_number, shooter_id, shots_per_series
     const series = {
       id,
-      shooter_id: shooterId,
+      shooter_id: competitorId,
       round_number: r,
       shots_per_series: SHOTS_PER_SERIES
     };
@@ -246,9 +311,9 @@ export default function App() {
 
 
   async function writeShot(index, valueOrNull) {
-    if (!activeShooterId) return;
+    if (!activeCompetitorId) return;
 
-    const seriesId = await ensureSeriesExists(activeShooterId, round);
+    const seriesId = await ensureSeriesExists(activeCompetitorId, round);
 
     if (valueOrNull === null) {
       // "Löschen": wir setzen auf 0? oder lassen weg?
@@ -315,7 +380,7 @@ export default function App() {
           onChange={setTab}
           items={[
             { value: "setup", label: "Setup" },
-            { value: "shooters", label: "Shooters" },
+            { value: "competitors", label: "Competitors" },
             { value: "shoot", label: "Input" }
           ]}
         />
@@ -369,17 +434,17 @@ export default function App() {
               <div className="item">
                 <div><b>Online:</b> {online ? "Yes" : "No"}</div>
                 <div><b>Message:</b> {statusMsg}</div>
-                <div><b>Shooters:</b> {shooters.length}</div>
+                <div><b>Competitors:</b> {competitors.length}</div>
                 <div><b>Event:</b> {state?.eventId || "—"}</div>
               </div>
             </div>
           </div>
         )}
 
-        {tab === "shooters" && (
+        {tab === "competitors" && (
           <div className="grid2">
             <div>
-              <div className="small" style={{ marginBottom: 6 }}>Add New Shooter</div>
+              <div className="small" style={{ marginBottom: 6 }}>Add New Competitor</div>
               <div className="row">
                 <input
                   className="input"
@@ -405,7 +470,7 @@ export default function App() {
                 onChange={(e) => setNewCountry(e.target.value)}
               />
               <div style={{ height: 10 }} />
-              <button className="btn primary" onClick={createShooter}>Add Shooter</button>
+              <button className="btn primary" onClick={createCompetitor}>Add Competitor</button>
 
               <div className="small" style={{ marginTop: 10 }}>
                 Offline? No problem: will be queued and synced later.
@@ -415,12 +480,12 @@ export default function App() {
             <div>
               <div className="row" style={{ marginBottom: 10 }}>
                 <span className="pill">Active</span>
-                <b>{activeShooter ? `${activeShooter.name} (${activeShooter.country || "—"})` : "—"}</b>
+                <b>{activeCompetitor ? `${activeCompetitor.name} (${activeCompetitor.country || "—"})` : "—"}</b>
               </div>
-              <ShooterList
-                shooters={shooters}
-                activeId={activeShooterId}
-                onSelect={(id) => { setActiveShooterId(id); setTab("shoot"); }}
+              <CompetitorList
+                competitors={competitors}
+                activeId={activeCompetitorId}
+                onSelect={(id) => { setActiveCompetitorId(id); setTab("shoot"); }}
               />
             </div>
           </div>
@@ -429,27 +494,27 @@ export default function App() {
         {tab === "shoot" && (
           <div>
             <div className="row" style={{ marginBottom: 10 }}>
-              <span className="pill">Shooter</span>
-              <b>{activeShooter ? `${activeShooter.name} (${activeShooter.country || "—"})` : "— select —"}</b>
+              <span className="pill">Competitor</span>
+              <b>{activeCompetitor ? `${activeCompetitor.name} (${activeCompetitor.country || "—"})` : "— select —"}</b>
               <div className="spacer" />
-              <button className="btn" onClick={() => setTab("shooters")}>Change</button>
+              <button className="btn" onClick={() => setTab("competitors")}>Change</button>
             </div>
 
             <div className="row" style={{ marginBottom: 10 }}>
               <RoundPicker round={round} onRound={setRound} maxRounds={MAX_ROUNDS} />
               <div className="spacer" />
               <span className="pill">Series: <b style={{ color: "var(--text)" }}>{seriesScore}</b></span>
-              <span className="pill">Inner Tens: <b style={{ color: "var(--text)" }}>{innerTensCount}</b></span>
+              <span className="pill">Inner Tens: <b style={{ color: "var(--text)" }}>{innerTensCountDeriv}</b></span>
               <span className="pill">Total: <b style={{ color: "var(--text)" }}>{grandScore}</b></span>
             </div>
 
-            {!activeShooter && (
-              <Banner kind="warn" title="No Shooter Active">
-                Go to "Shooters" and select an active shooter.
+            {!activeCompetitor && (
+              <Banner kind="warn" title="No Competitor Active">
+                Go to "Competitors" and select an active competitor.
               </Banner>
             )}
 
-            {activeShooter && (
+            {activeCompetitor && (
               <div className="shotGrid">
                 {Array.from({ length: SHOTS_PER_SERIES }, (_, i) => i + 1).map(idx => {
                   const shots = normalizeShots(activeSeries);
@@ -500,7 +565,7 @@ export default function App() {
           </button>
         </div>
         <pre style={{ margin: 0, marginTop: 10, whiteSpace: "pre-wrap" }}>
-          {state ? JSON.stringify(state, null, 2) : "—"}
+          {mergedState ? JSON.stringify(mergedState, null, 2) : "—"}
         </pre>
       </div>
     </div>

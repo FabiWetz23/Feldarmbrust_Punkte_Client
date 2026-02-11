@@ -54,12 +54,12 @@ export function getAllSeries(state) {
   return [];
 }
 
-export function getSeries(state, shooterId, round) {
+export function getSeries(state, competitorId, round) {
   const all = getAllSeries(state);
   return all.find(s => {
     const sid = s.shooter_id ?? s.shooterId;
     const rn = s.round_number ?? s.round;
-    return sid === shooterId && Number(rn) === Number(round);
+    return sid === competitorId && Number(rn) === Number(round);
   }) || null;
 }
 
@@ -75,24 +75,24 @@ export function seriesTotal(series, shotsPerSeries = 6) {
   }, 0);
 }
 
-export function shooterGrandTotal(state, shooterId, shotsPerSeries = 6) {
+export function competitorGrandTotal(state, competitorId, shotsPerSeries = 6) {
   const all = getAllSeries(state);
   // Match rounds are > 0. Sighting rounds are <= 0.
   const mine = all.filter(s => {
     const sid = s.shooter_id ?? s.shooterId;
     const rn = Number(s.round_number ?? s.round);
-    return sid === shooterId && rn > 0;
+    return sid === competitorId && rn > 0;
   });
   return mine.reduce((acc, s) => acc + seriesTotal(s, shotsPerSeries), 0);
 }
 
-export function countInnerTens(state, shooterId) {
+export function countInnerTens(state, competitorId) {
   const all = getAllSeries(state);
   // Inner tens from MATCH rounds only? Usually yes.
   const mine = all.filter(s => {
     const sid = s.shooter_id ?? s.shooterId;
     const rn = Number(s.round_number ?? s.round);
-    return sid === shooterId && rn > 0;
+    return sid === competitorId && rn > 0;
   });
 
   let count = 0;
@@ -104,6 +104,6 @@ export function countInnerTens(state, shooterId) {
   return count;
 }
 
-export function makeSeriesId(shooterId, round) {
-  return `ser-${shooterId}-r${round}`;
+export function makeSeriesId(competitorId, round) {
+  return `ser-${competitorId}-r${round}`;
 }

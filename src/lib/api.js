@@ -32,11 +32,11 @@ export function getState(base, apiKey) {
   return fetchJSON(api(base, "/state"), {}, apiKey);
 }
 
-export function upsertShooter(base, shooter, apiKey) {
+export function upsertCompetitor(base, competitor, apiKey) {
   return fetchJSON(api(base, "/shooters"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(shooter)
+    body: JSON.stringify(competitor)
   }, apiKey);
 }
 
